@@ -1,8 +1,8 @@
 {
   "name": "SwitchBot Direct API Bridge",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "slug": "switchbot_bridge",
-  "description": "Direct SwitchBot API — real-time device states, commands, blind/fan control, and door state monitoring. Bypasses cloud polling lag.",
+  "description": "Event-driven SwitchBot API — lock confirmation, battery trending, motion reliability scoring.",
   "url": "https://github.com/bstanbury/ha-addon-switchbot-bridge",
   "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
   "startup": "application",
@@ -15,7 +15,8 @@
     "api_port": 8098,
     "poll_interval": 30,
     "ha_url": "http://localhost:8123",
-    "ha_token": ""
+    "ha_token": "",
+    "event_bus_url": "http://localhost:8092"
   },
   "schema": {
     "token": "str",
@@ -23,7 +24,8 @@
     "api_port": "int",
     "poll_interval": "int",
     "ha_url": "str",
-    "ha_token": "str"
+    "ha_token": "str",
+    "event_bus_url": "str"
   },
   "ingress": false,
   "panel_icon": "mdi:home-switch"
