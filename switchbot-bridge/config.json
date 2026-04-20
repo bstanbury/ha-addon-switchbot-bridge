@@ -1,0 +1,26 @@
+{
+  "name": "SwitchBot Direct API Bridge",
+  "version": "0.1.0",
+  "slug": "switchbot_bridge",
+  "description": "Direct SwitchBot API — bypasses cloud polling for real-time states and commands.",
+  "url": "https://github.com/bstanbury/ha-addon-switchbot-bridge",
+  "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
+  "startup": "application",
+  "boot": "auto",
+  "init": false,
+  "host_network": true,
+  "options": {
+    "token": "",
+    "secret": "",
+    "api_port": 8098,
+    "poll_interval": 30
+  },
+  "schema": {
+    "token": "str",
+    "secret": "str",
+    "api_port": "int",
+    "poll_interval": "int"
+  },
+  "ingress": false,
+  "panel_icon": "mdi:home-switch"
+}
