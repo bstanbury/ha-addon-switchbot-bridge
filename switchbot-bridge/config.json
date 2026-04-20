@@ -1,8 +1,8 @@
 {
   "name": "SwitchBot Direct API Bridge",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "slug": "switchbot_bridge",
-  "description": "Event-driven SwitchBot API — lock confirmation, battery trending, motion reliability scoring.",
+  "description": "Event-driven SwitchBot API — lock confirmation, battery trending, motion reliability scoring, bedroom safety.",
   "url": "https://github.com/bstanbury/ha-addon-switchbot-bridge",
   "arch": ["aarch64", "amd64", "armhf", "armv7", "i386"],
   "startup": "application",

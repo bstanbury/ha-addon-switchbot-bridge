@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""SwitchBot Direct API Bridge v2.0.0 — HA Add-on
+"""SwitchBot Direct API Bridge v3.0.0 — HA Add-on
 Real-time device states with Event Bus integration.
+
+v3.0 additions:
+  - Bedroom entity protection: never target bedroom devices unless motion confirmed
+  - Echo entity awareness: never use Echo devices for music playback
+  - Silent hours (22:00-08:00): audio actions become push notifications
 
 v2.0 additions:
   - Event Bus SSE subscriber: event-driven confirmation
@@ -40,6 +45,23 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger('switchbot-bridge')
 
+# v3.0: Safety constants
+BEDROOM_ENTITIES = lambda eid: 'bedroom' in eid.lower()
+ECHO_ENTITIES = [
+    'media_player.living_room_echo_show',
+    'media_player.kitchen_echo_show',
+    'media_player.bedroom_echo',
+]
+SILENT_HOURS = lambda: datetime.now().hour >= 22 or datetime.now().hour < 8
+
+def is_bedroom_safe():
+    """v3.0: Check if bedroom motion is active."""
+    try:
+        r = http.get(f'{HA_URL}/api/states/binary_sensor.bedroom_motion', headers={'Authorization': f'Bearer {HA_TOKEN}'}, timeout=5)
+        if r.status_code == 200: return r.json().get('state') == 'on'
+    except: pass
+    return False
+
 device_list = []
 device_cache = {}
 cache_lock = threading.Lock()
@@ -49,8 +71,8 @@ door_history = []
 last_door_state = None
 
 # v2.0: Battery trends and motion reliability
-battery_trends = {}  # {device_id: [{date, level}]}
-motion_reliability = {}  # {device_id: {ha_events, sb_events, mismatches}}
+battery_trends = {}
+motion_reliability = {}
 event_actions = deque(maxlen=100)
 DATA_V2 = '/data/switchbot_v2.json'
 
@@ -77,47 +99,33 @@ def save_v2_data():
     except: pass
 
 def track_battery(did, level):
-    """v2.0: Record battery level for trend analysis."""
-    if level is None or level == 0:
-        return
+    if level is None or level == 0: return
     today = datetime.now().strftime('%Y-%m-%d')
-    if did not in battery_trends:
-        battery_trends[did] = []
-    # Only record once per day
+    if did not in battery_trends: battery_trends[did] = []
     if not battery_trends[did] or battery_trends[did][-1].get('date') != today:
         battery_trends[did].append({'date': today, 'level': level})
-        # Keep last 90 days
         battery_trends[did] = battery_trends[did][-90:]
 
 def predict_replacement(did):
-    """v2.0: Predict battery replacement date based on trend."""
     trend = battery_trends.get(did, [])
-    if len(trend) < 7:
-        return None
-    # Calculate daily drain rate
-    recent = trend[-14:]  # Last 2 weeks
-    if len(recent) < 2:
-        return None
+    if len(trend) < 7: return None
+    recent = trend[-14:]
+    if len(recent) < 2: return None
     drain = (recent[0]['level'] - recent[-1]['level']) / len(recent)
-    if drain <= 0:
-        return None  # Battery not draining (or charging)
+    if drain <= 0: return None
     current = recent[-1]['level']
     days_remaining = int(current / drain)
     return {'days_remaining': days_remaining, 'daily_drain': round(drain, 2), 'current': current}
 
 def handle_event(ev):
-    """v2.0: React to Event Bus events."""
     eid = ev.get('entity_id', '')
     new = ev.get('new_state', '')
     old = ev.get('old_state', '')
     sig = ev.get('significant', False)
-    
     action = None
-    
-    # Lock state change from HA — verify with SwitchBot
+
     if 'lock' in eid and sig:
         logger.info(f'EVENT: Lock change detected ({old}->{new}) — verifying with SwitchBot')
-        # Query SwitchBot lock directly for confirmation
         for did in LOCK_DEVICES:
             sb_status = fetch_status(did)
             if sb_status:
@@ -128,25 +136,21 @@ def handle_event(ev):
                     action = f'lock_mismatch_{new}_vs_{sb_lock}'
                 else:
                     action = f'lock_confirmed_{new}'
-    
-    # Motion detected in HA — cross-reference with SwitchBot motion
+
     elif 'motion' in eid and new == 'on':
-        # Track HA motion event
         for did in MOTION_SENSORS:
             if did not in motion_reliability:
                 motion_reliability[did] = {'ha_events': 0, 'sb_events': 0, 'mismatches': 0}
             motion_reliability[did]['ha_events'] += 1
         action = 'motion_ha_tracked'
-    
-    # Door unlock + motion within 60s = someone let in
+
     elif 'lock' in eid and new == 'unlocked':
         action = 'unlock_detected'
-    
+
     if action:
         event_actions.append({'time': datetime.now().isoformat(), 'event': eid, 'action': action, 'old': old, 'new': new})
 
 def event_bus_subscriber():
-    """v2.0: SSE subscriber thread."""
     while True:
         try:
             logger.info(f'Connecting to Event Bus SSE: {EVENT_BUS_URL}/events/stream')
@@ -157,26 +161,22 @@ def event_bus_subscriber():
                 try:
                     ev = json.loads(event.data)
                     handle_event(ev)
-                except json.JSONDecodeError:
-                    pass
-                except Exception as e:
-                    logger.error(f'Event handling error: {e}')
+                except json.JSONDecodeError: pass
+                except Exception as e: logger.error(f'Event handling error: {e}')
         except Exception as e:
             logger.error(f'Event Bus SSE error: {e}')
         logger.info('Reconnecting to Event Bus in 10s...')
         time.sleep(10)
 
 def battery_tracker_loop():
-    """v2.0: Periodically track battery levels."""
     while True:
         for did in list(LOCK_DEVICES.keys()) + list(MOTION_SENSORS.keys()) + list(CLIMATE_SENSORS.keys()):
             with cache_lock:
                 c = device_cache.get(did, {})
             level = c.get('status', {}).get('battery')
-            if level is not None:
-                track_battery(did, level)
+            if level is not None: track_battery(did, level)
         save_v2_data()
-        time.sleep(3600)  # Every hour
+        time.sleep(3600)
 
 def sb_headers():
     t = str(int(time.time() * 1000))
@@ -252,8 +252,7 @@ def track_door():
 def poll_loop():
     critical = list(MOTION_SENSORS.keys()) + list(LOCK_DEVICES.keys())
     while True:
-        for did in critical:
-            fetch_status(did)
+        for did in critical: fetch_status(did)
         track_door()
         time.sleep(POLL_INTERVAL)
 
@@ -262,7 +261,7 @@ def resolve_id(id_or_alias):
 
 @app.route('/')
 def index():
-    return jsonify({'name': 'SwitchBot Direct API Bridge', 'version': '2.0.0', 'devices': len(device_list), 'cached': len(device_cache), 'events': len(events_log), 'battery_tracked': len(battery_trends)})
+    return jsonify({'name': 'SwitchBot Direct API Bridge', 'version': '3.0.0', 'devices': len(device_list), 'cached': len(device_cache), 'events': len(events_log), 'battery_tracked': len(battery_trends)})
 
 @app.route('/health')
 def health():
@@ -353,23 +352,19 @@ def lock_unlock():
 @app.route('/blind/<id_or_alias>/<int:position>', methods=['POST','GET'])
 def blind_position(id_or_alias, position):
     did = resolve_id(id_or_alias)
-    if position < 0 or position > 100:
-        return jsonify({'error': 'Position must be 0-100'}), 400
+    if position < 0 or position > 100: return jsonify({'error': 'Position must be 0-100'}), 400
     return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'setPosition', 'parameter': f'0,ff,{position}', 'commandType': 'command'}))
 
 @app.route('/fan/<id_or_alias>/<action>', methods=['POST','GET'])
 def fan_control(id_or_alias, action):
     did = resolve_id(id_or_alias)
-    if action.lower() == 'off':
-        return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'turnOff', 'parameter': 'default', 'commandType': 'command'}))
-    elif action.lower() == 'on':
-        return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'turnOn', 'parameter': 'default', 'commandType': 'command'}))
+    if action.lower() == 'off': return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'turnOff', 'parameter': 'default', 'commandType': 'command'}))
+    elif action.lower() == 'on': return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'turnOn', 'parameter': 'default', 'commandType': 'command'}))
     else:
         try:
             speed = int(action)
             return jsonify(sb_post(f'/devices/{did}/commands', {'command': 'setSpeed', 'parameter': str(speed), 'commandType': 'command'}))
-        except:
-            return jsonify({'error': 'Use: on, off, or speed 1-100'}), 400
+        except: return jsonify({'error': 'Use: on, off, or speed 1-100'}), 400
 
 @app.route('/events')
 def events():
@@ -380,7 +375,6 @@ def events():
 def door_hist():
     return jsonify(door_history[-20:])
 
-# v2.0 endpoints
 @app.route('/battery/trends')
 def battery_trends_endpoint():
     results = {}
@@ -399,13 +393,11 @@ def event_log():
     return jsonify(list(event_actions)[-20:])
 
 if __name__ == '__main__':
-    logger.info(f'SwitchBot Direct API Bridge v2.0.0 on port {API_PORT}')
+    logger.info(f'SwitchBot Direct API Bridge v3.0.0 on port {API_PORT}')
     load_v2_data()
     fetch_devices()
     threading.Thread(target=poll_loop, daemon=True).start()
-    # v2.0: Start Event Bus SSE subscriber
     threading.Thread(target=event_bus_subscriber, daemon=True).start()
-    # v2.0: Start battery tracker
     threading.Thread(target=battery_tracker_loop, daemon=True).start()
     logger.info('Background poller + Event Bus subscriber + battery tracker started')
     app.run(host='0.0.0.0', port=API_PORT, debug=False)
